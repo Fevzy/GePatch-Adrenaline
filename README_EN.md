@@ -22,9 +22,19 @@ Full checksums: [release/SHA256SUMS](release/SHA256SUMS).
 I fixed screen tearing during fades and transitions and improved graphics
 processing and frame presentation. Tested on my Vita in Tekken 6.
 
+## Adrenaline compatibility
+
+GePatch includes support for standard Adrenaline, so updating Adrenaline is
+optional when using the plugin on its own. Fixes for stencil-based shadows and
+screen tearing through double buffering require the modified
+`adrenaline_user.suprx` included in the release. This module is intended for
+**Adrenaline 8.0.2**.
+
+Other Adrenaline versions and forks, as well as ABM compatibility, have not been tested yet.
+
 ## Installing the update
 
-Requires an existing **Adrenaline 8.0.2** installation. This package updates two
+Installing both modules requires **Adrenaline 8.0.2**. This package updates two
 modules; it does not include a full installation VPK or PSP firmware.
 
 1. Close Adrenaline completely.
@@ -38,9 +48,9 @@ modules; it does not include a full installation VPK or PSP firmware.
 6. Restart Adrenaline completely. To roll back, close it and restore your
    backed-up modules and configuration.
 
-Verify the transferred files against their SHA256 checksums. Install both
-modules from the same release: the Vita-side module supports switching between
-two completed display buffers.
+If you keep standard Adrenaline, skip replacing `adrenaline_user.suprx`.
+For the full set of fixes, install both modules from the same release.
+Verify the transferred files against their SHA256 checksums.
 
 ## Changes
 
