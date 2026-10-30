@@ -1,0 +1,18 @@
+{
+  "date": "2026-10-30",
+  "status": "user-validated baseline; DW grey ground unresolved",
+  "adrenaline_upstream": {
+    "url": "https://github.com/isage/Adrenaline",
+    "commit": "6c2ab8c79679b021de230f28da8278518c410bea"
+  },
+  "binaries": {
+    "ge_patch.prx": {
+      "sha256": "091579af5b29ccc7d05d815245899fbbd94b290a1906a8a0706c5b9e267b6d1b",
+      "bytes": 72450
+    },
+    "adrenaline_user.suprx": {
+      "sha256": "476689be428ad2b33fd02bd385c12b923858f7300d1aad03ab1658a210689557",
+      "bytes": 367254
+    }
+  }
+}

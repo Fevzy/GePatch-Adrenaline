@@ -1,0 +1,10 @@
+/build-tools/
+/dist/
+*.o
+*.elf
+*.log
+__pycache__/
+/gepatch/ge_patch.prx
+/adrenaline/src/build/
+/adrenaline/src/cef/build/
+/adrenaline/shaderbake/build/

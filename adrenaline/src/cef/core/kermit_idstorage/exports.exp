@@ -1,0 +1,30 @@
+PSP_BEGIN_EXPORTS
+
+PSP_EXPORT_START(syslib, 0, 0x8000)
+PSP_EXPORT_FUNC(module_start)
+PSP_EXPORT_FUNC(module_reboot_before)
+PSP_EXPORT_VAR(module_info)
+PSP_EXPORT_END
+
+PSP_EXPORT_START(sceIdStorage_driver, 0x0011, 0x0001)
+PSP_EXPORT_FUNC(sceIdStorageCreateAtomicLeaves)
+PSP_EXPORT_FUNC(sceIdStorageCreateLeaf)
+PSP_EXPORT_FUNC(sceIdStorageDeleteLeaf)
+PSP_EXPORT_FUNC(sceIdStorageEnd)
+PSP_EXPORT_FUNC(sceIdStorageEnumId)
+PSP_EXPORT_FUNC(sceIdStorageFlush)
+PSP_EXPORT_FUNC(sceIdStorageFormat)
+PSP_EXPORT_FUNC(sceIdStorageGetFreeLeaves)
+PSP_EXPORT_FUNC(sceIdStorageGetLeafSize)
+PSP_EXPORT_FUNC(sceIdStorageInit)
+PSP_EXPORT_FUNC(sceIdStorageIsDirty)
+PSP_EXPORT_FUNC(sceIdStorageIsFormatted)
+PSP_EXPORT_FUNC(sceIdStorageIsReadOnly)
+PSP_EXPORT_FUNC(sceIdStorageLookup)
+PSP_EXPORT_FUNC(sceIdStorageReadLeaf)
+PSP_EXPORT_FUNC(sceIdStorageUnformat)
+PSP_EXPORT_FUNC(sceIdStorageUpdate)
+PSP_EXPORT_FUNC(sceIdStorageWriteLeaf)
+PSP_EXPORT_END
+
+PSP_END_EXPORTS

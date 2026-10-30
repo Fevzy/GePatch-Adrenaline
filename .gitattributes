@@ -1,0 +1,9 @@
+* text=auto eol=lf
+*.sh text eol=lf
+*.cmd text eol=crlf
+*.prx binary
+*.suprx binary
+*.a binary
+*.bin binary
+*.pbp binary
+*.png binary

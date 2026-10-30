@@ -1,0 +1,41 @@
+{
+  "retrieved": "2026-10-27",
+  "note": "Read-only raw GitHub snapshots obtained with the web tool because shell network is unavailable. Commit hash not verified; exact imported bytes are identified below.",
+  "files": {
+    "exports.exp": {
+      "url": "https://raw.githubusercontent.com/TheOfficialFloW/GePatch/master/exports.exp",
+      "sha256": "6b2bbaa6311104d1cea179f2349e1ec733d947c55c6fb6721b74d427fecd24ea",
+      "bytes": 145
+    },
+    "ge_constants.h": {
+      "url": "https://raw.githubusercontent.com/TheOfficialFloW/GePatch/master/ge_constants.h",
+      "sha256": "29b5c0affe71eb10d7023d371c5e732decaf70cad4718d9e5ddc10e0d8cc31b4",
+      "bytes": 14136
+    },
+    "gu.c": {
+      "url": "https://raw.githubusercontent.com/TheOfficialFloW/GePatch/master/gu.c",
+      "sha256": "4e2bc47941b7f1f171ad42eee5b5586220ff9b6763a0d11bca3d7879d4dbca23",
+      "bytes": 4714
+    },
+    "LICENSE.TXT": {
+      "url": "https://raw.githubusercontent.com/TheOfficialFloW/GePatch/master/LICENSE.TXT",
+      "sha256": "6d31ace0fb47ed22539b8edc77e920038b30fdd2f83706dc2aae5dbab3cd15c3",
+      "bytes": 19695
+    },
+    "main.c": {
+      "url": "https://raw.githubusercontent.com/TheOfficialFloW/GePatch/master/main.c",
+      "sha256": "3dd71b4c61a33478afc51d1a09efdca818c08406ff4b5b3d40b0ad198505004d",
+      "bytes": 25193
+    },
+    "Makefile": {
+      "url": "https://raw.githubusercontent.com/TheOfficialFloW/GePatch/master/Makefile",
+      "sha256": "afa96c05e9a48a59b768e8b82ddcbf96a477b81f097300f35b8ec78e0bb72c53",
+      "bytes": 441
+    },
+    "README.md": {
+      "url": "https://raw.githubusercontent.com/TheOfficialFloW/GePatch/master/README.md",
+      "sha256": "622985162f91d8c5e986c248c6aeb669567d292b281b3636c6269ee8ed05170f",
+      "bytes": 3571
+    }
+  }
+}

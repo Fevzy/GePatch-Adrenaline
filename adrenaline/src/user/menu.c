@@ -1,0 +1,1041 @@
+/*
+	Adrenaline
+	Copyright (C) 2016-2018, TheFloW
+
+	This program is free software: you can redistribute it and/or modify
+	it under the terms of the GNU General Public License as published by
+	the Free Software Foundation, either version 3 of the License, or
+	(at your option) any later version.
+
+	This program is distributed in the hope that it will be useful,
+	but WITHOUT ANY WARRANTY; without even the implied warranty of
+	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+	GNU General Public License for more details.
+
+	You should have received a copy of the GNU General Public License
+	along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#include <psp2/appmgr.h>
+#include <psp2/apputil.h>
+#include <psp2/ctrl.h>
+#include <psp2/display.h>
+#include <psp2/system_param.h>
+#include <psp2/sysmodule.h>
+#include <psp2/power.h>
+#include <psp2/io/dirent.h>
+#include <psp2/io/fcntl.h>
+#include <psp2/io/stat.h>
+#include <psp2/kernel/dmac.h>
+#include <psp2/kernel/sysmem.h>
+#include <psp2/kernel/processmgr.h>
+#include <psp2/kernel/clib.h>
+
+#include <stdio.h>
+#include <stdarg.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <vita2d.h>
+
+#include "main.h"
+#include "gerender.h"
+#include "menu.h"
+#include "states.h"
+#include "usb.h"
+#include "utils.h"
+#include "math_utils.h"
+#include "../adrenaline_version.h"
+
+#include "includes/lcd3x_v.h"
+#include "includes/lcd3x_f.h"
+#include "includes/texture_v.h"
+#include "includes/texture_f.h"
+#include "includes/opaque_v.h"
+#include "includes/bicubic_f.h"
+#include "includes/sharp_bilinear_f.h"
+#include "includes/sharp_bilinear_v.h"
+#include "includes/sharp_bilinear_simple_f.h"
+#include "includes/sharp_bilinear_simple_v.h"
+#include "includes/advanced_aa_v.h"
+#include "includes/advanced_aa_f.h"
+#include "includes/scale2x_v.h"
+#include "includes/scale2x_f.h"
+#include "includes/scale2x_plus_v.h"
+#include "includes/scale2x_plus_f.h"
+#include "includes/scale3x_v.h"
+#include "includes/scale3x_f.h"
+#include "includes/vflux_f.h"
+#include "includes/vflux_v.h"
+#include "includes/texture_v.h"
+#include "includes/texture_f.h"
+
+static const SceGxmProgram *const gxm_program_vflux_v = (SceGxmProgram*)&vflux_v;
+static const SceGxmProgram *const gxm_program_vflux_f = (SceGxmProgram*)&vflux_f;
+
+extern SceGxmContext *_vita2d_context;
+int sceCommonDialogIsRunning();
+
+vita2d_pgf *font;
+vita2d_texture* overlay_texture = NULL;
+
+int language = 0, enter_button = 0, date_format = 0, time_format = 0;
+
+static int EnterStandbyMode();
+static int OpenOfficialSettings();
+static int ExitPspEmuApplication();
+static int ResetAdrenalineSettings();
+
+// RGB colors for the filter box used by f.lux
+static float flux_colors[] = {
+	1.0f, 0.5f, 0.0f, 0.0f, // Yellow
+	0.0f, 0.0f, 0.5f, 0.0f, // Blue
+	0.0f, 0.0f, 0.0f, 0.0f  // Black
+};
+
+static char *graphics_options[] = { "Original", "Bilinear", "Sharp bilinear", "Advanced AA", "LCD3x", "Sharp bilinear without scanlines", "Scale2x", "Scale2x Plus", "Scale3x"};
+
+static char *flux_mode_options[] = { "None", "Yellow", "Blue", "Black" };
+static char *no_yes_options[] = { "No", "Yes" };
+
+static char *yes_no_options[] = { "Yes", "No" };
+static char *ms_location_options[] = { "ux0:pspemu", "ur0:pspemu", "imc0:pspemu", "xmc0:pspemu", "uma0:pspemu", "uma0:" };
+static char *usbdevice_options[] = { "Memory Card", "Internal Storage", "sd2vita", "psvsd" };
+static char *cfwtype_options[] = { "EPI", "ARK" };
+static char *ef_location_options[] = { "Disabled", "uma0:pspemu", "xmc0:pspemu", "ux0:pspemu", "uma0:" };
+
+static MenuEntry main_entries[] = {
+	{ "Enter Standby Mode",        MENU_ENTRY_TYPE_CALLBACK, 0, EnterStandbyMode, NULL, NULL, 0 },
+	{ "Open Official Settings",    MENU_ENTRY_TYPE_CALLBACK, 0, OpenOfficialSettings, NULL, NULL, 0 },
+	{ "Exit PspEmu Application",   MENU_ENTRY_TYPE_CALLBACK, 0, ExitPspEmuApplication, NULL, NULL, 0 },
+	{ "Exit Adrenaline Menu",      MENU_ENTRY_TYPE_CALLBACK, 0, ExitAdrenalineMenu, NULL, NULL, 0 },
+};
+
+static MenuEntry settings_entries[] = {
+	{ "vPSP Custom Firmware",      MENU_ENTRY_TYPE_OPTION, 0, NULL, &config.cfw_type, cfwtype_options, sizeof(cfwtype_options)/sizeof(char*) },
+	{ "Graphics Filtering",        MENU_ENTRY_TYPE_OPTION, 0, NULL, &config.graphics_filtering, graphics_options, sizeof(graphics_options) / sizeof(char **) },
+	/* ("Original", "Native Video", "Show FPS", and GePatch's "Rendering
+	   Resolution" and "Frame Skipping": gone -- GePatch is 960x544 only) */
+	{ "Smooth Graphics",           MENU_ENTRY_TYPE_OPTION, 0, NULL, &config.no_smooth_graphics, yes_no_options, sizeof(yes_no_options) / sizeof(char **) },
+	{ "f.lux Filter Color",        MENU_ENTRY_TYPE_OPTION, 0, NULL, &config.flux_mode, flux_mode_options, sizeof(flux_mode_options) / sizeof(char **) },
+	{ "Screen Scale X (PSP)",      MENU_ENTRY_TYPE_SCALE,  0, NULL, (uint8_t *)&config.psp_screen_scale_x, NULL, 0 },
+	{ "Screen Scale Y (PSP)",      MENU_ENTRY_TYPE_SCALE,  0, NULL, (uint8_t *)&config.psp_screen_scale_y, NULL, 0 },
+	{ "Screen Scale X (PS1)",      MENU_ENTRY_TYPE_SCALE,  0, NULL, (uint8_t *)&config.ps1_screen_scale_x, NULL, 0 },
+	{ "Screen Scale Y (PS1)",      MENU_ENTRY_TYPE_SCALE,  0, NULL, (uint8_t *)&config.ps1_screen_scale_y, NULL, 0 },
+	{ "Memory Stick Location",     MENU_ENTRY_TYPE_OPTION, 0, NULL, &config.ms_location, ms_location_options, sizeof(ms_location_options) / sizeof(char **) },
+	{ "System Storage Location",   MENU_ENTRY_TYPE_OPTION, 0, NULL, &config.ef_location, ef_location_options, sizeof(ef_location_options) / sizeof(char **) },
+	{ "USB device",                MENU_ENTRY_TYPE_OPTION, 0, NULL, &config.usbdevice, usbdevice_options, sizeof(usbdevice_options) / sizeof(char **) },
+	{ "Skip Adrenaline Boot Logo", MENU_ENTRY_TYPE_OPTION, 0, NULL, &config.skip_logo, no_yes_options, sizeof(no_yes_options) / sizeof(char **) },
+	{ "Reset Adrenaline Settings", MENU_ENTRY_TYPE_CALLBACK, 0, ResetAdrenalineSettings, NULL, NULL, 0 },
+};
+
+static MenuEntry about_entries[] = {
+	#if defined(NIGHTLY) && NIGHTLY == 1
+	{ "6.61 Adrenaline-" ADRENALINE_VERSION_MAJOR_STR "." ADRENALINE_VERSION_MINOR_STR "." ADRENALINE_VERSION_MICRO_STR "-" EPI_NIGHTLY_VER, MENU_ENTRY_TYPE_TEXT, ORANGE, NULL, NULL, NULL, 0 },
+	#else
+	{ "6.61 Adrenaline-" ADRENALINE_VERSION_MAJOR_STR "." ADRENALINE_VERSION_MINOR_STR "." ADRENALINE_VERSION_MICRO_STR, MENU_ENTRY_TYPE_TEXT, ORANGE, NULL, NULL, NULL, 0 },
+	#endif
+	{ "by Cat and GrayJack", MENU_ENTRY_TYPE_TEXT, WHITE, NULL, NULL, NULL, 0 },
+	{ "", MENU_ENTRY_TYPE_TEXT, WHITE, NULL, NULL, NULL, 0 },
+	{ "", MENU_ENTRY_TYPE_TEXT, WHITE, NULL, NULL, NULL, 0 },
+	{ "Credits", MENU_ENTRY_TYPE_TEXT, ORANGE, NULL, NULL, NULL, 0 },
+	{ "Team molecule for HENkaku", MENU_ENTRY_TYPE_TEXT, WHITE, NULL, NULL, NULL, 0 },
+	{ "TheFloW for starting Adrenaline", MENU_ENTRY_TYPE_TEXT, WHITE, NULL, NULL, NULL, 0 },
+	{ "frangarcj for graphics filtering", MENU_ENTRY_TYPE_TEXT, WHITE, NULL, NULL, NULL, 0 },
+	{ "Rinnegatamante for f.lux", MENU_ENTRY_TYPE_TEXT, WHITE, NULL, NULL, NULL, 0 },
+	{ "xerpi for vita2dlib", MENU_ENTRY_TYPE_TEXT, WHITE, NULL, NULL, NULL, 0 },
+	{ "qwikrazor87 for DRM RE", MENU_ENTRY_TYPE_TEXT, WHITE, NULL, NULL, NULL, 0 },
+	{ "ARK CFW team for Inferno v2, collaboration, and more", MENU_ENTRY_TYPE_TEXT, WHITE, NULL, NULL, NULL, 0 },
+//   { "Cat for featurrrs", MENU_ENTRY_TYPE_TEXT, WHITE, NULL, NULL, NULL, 0 },
+//   { "GrayJack for hyperfocus time", MENU_ENTRY_TYPE_TEXT, WHITE, NULL, NULL, NULL, 0 },
+};
+
+static TabEntry tab_entries[] = {
+	{ "Main", main_entries, sizeof(main_entries) / sizeof(MenuEntry), 1 },
+	{ "States", NULL, 0, 0 },
+	{ "Settings", settings_entries, sizeof(settings_entries) / sizeof(MenuEntry), 1 },
+	{ "About", about_entries, sizeof(about_entries) / sizeof(MenuEntry), 0 },
+};
+
+#define N_TABS (sizeof(tab_entries) / sizeof(TabEntry))
+#define TAB_SIZE (WINDOW_WIDTH / N_TABS)
+
+static AdrenalineConfig old_config;
+static int tab_sel = 0;
+static int menu_sel = 0;
+int menu_open = 0;
+static int g_hide_menu = 0;
+
+static int changed = 0;
+static int open_official_settings = 0;
+
+static SceUID settings_semaid = -1;
+
+static int EnterStandbyMode() {
+	stopUsb(usbdevice_modid);
+	ExitAdrenalineMenu();
+	scePowerRequestSuspend();
+	return 0;
+}
+
+static int SaveAdrSetting() {
+	config.magic[0] = ADRENALINE_CFG_MAGIC_1;
+	config.magic[1] = ADRENALINE_CFG_MAGIC_2;
+	WriteFile("ux0:app/" ADRENALINE_TITLEID "/adrenaline.bin", &config, sizeof(AdrenalineConfig));
+}
+
+static int OpenOfficialSettings() {
+	open_official_settings = 1;
+	ExitAdrenalineMenu();
+	return 0;
+}
+
+static int ExitPspEmuApplication() {
+	stopUsb(usbdevice_modid);
+	ExitAdrenalineMenu();
+	ScePspemuErrorExit(0);
+	return 0;
+}
+
+static int EnterAdrenalineMenu() {
+	initStates();
+
+	memcpy(&old_config, &config, sizeof(AdrenalineConfig));
+
+	changed = 0;
+	menu_open = 1;
+	open_official_settings = 0;
+
+	SceAdrenaline *adrenaline = (SceAdrenaline *)ScePspemuConvertAddress(ADRENALINE_ADDRESS, KERMIT_INPUT_MODE, ADRENALINE_SIZE);
+	if (adrenaline->pops_mode) {
+		ScePspemuPausePops(1);
+	} else if (adrenaline->app_type == SCE_APP_TYPE_GAME || adrenaline->app_type == SCE_APP_TYPE_APP) {
+		lockPower();
+		SendAdrenalineRequest(ADRENALINE_PSP_CMD_PAUSE_WORLD);
+	}
+
+	// Check if ARK is installed
+	SceIoStat stat;
+	char ark_path[47];
+	snprintf(ark_path, 47, "%s" FLASH0_ARK_PATH, getPspemuMemoryStickLocation());
+	if (sceIoGetstat(ark_path, &stat) < 0 && sceIoGetstat("ux0:pspemu" FLASH0_ARK_PATH, &stat) < 0){
+		settings_entries[0].n_options = 1;
+		config.cfw_type = 0;
+	} else {
+		settings_entries[0].n_options = sizeof(cfwtype_options)/sizeof(char*);
+	}
+
+	return 0;
+}
+
+int ExitAdrenalineMenu() {
+	if (changed) {
+		SaveAdrSetting();
+	}
+
+	SceAdrenaline *adrenaline = (SceAdrenaline *)ScePspemuConvertAddress(ADRENALINE_ADDRESS, KERMIT_INPUT_MODE, ADRENALINE_SIZE);
+	if (adrenaline->pops_mode) {
+		ScePspemuPausePops(0);
+	} else if (adrenaline->app_type == SCE_APP_TYPE_GAME || adrenaline->app_type == SCE_APP_TYPE_APP)  {
+		unlockPower();
+		SendAdrenalineRequest(ADRENALINE_PSP_CMD_RESUME_WORLD);
+	}
+
+	menu_open = 0;
+
+	if (old_config.ms_location != config.ms_location) {
+		SendAdrenalineRequest(ADRENALINE_PSP_CMD_REINSERT_MS);
+	}
+
+	if (old_config.ef_location != config.ef_location) {
+		SendAdrenalineRequest(ADRENALINE_PSP_CMD_REINSERT_EF);
+	}
+
+	SetPspemuFrameBuffer((void *)SCE_PSPEMU_FRAMEBUFFER);
+	sceDisplayWaitVblankStart();
+
+	sceKernelSignalSema(settings_semaid, 1);
+
+	finishStates();
+
+	return 0;
+}
+
+int ResetAdrenalineSettings() {
+	memset(&config, 0, sizeof(AdrenalineConfig));
+	config.magic[0] = ADRENALINE_CFG_MAGIC_1;
+	config.magic[1] = ADRENALINE_CFG_MAGIC_2;
+	config.psp_screen_scale_x = 2.0f;
+	config.psp_screen_scale_y = 2.0f;
+	config.ps1_screen_scale_x = 1.0f;
+	config.ps1_screen_scale_y = 1.0f;
+	WriteFile("ux0:app/" ADRENALINE_TITLEID "/adrenaline.bin", &config, sizeof(AdrenalineConfig));
+
+	return 0;
+}
+
+void drawMenu() {
+	// Draw window
+	vita2d_draw_rectangle(WINDOW_X, WINDOW_Y, WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_COLOR);
+
+	// Draw title
+	vita2d_draw_rectangle(WINDOW_X, WINDOW_Y, WINDOW_WIDTH, 38.0f, COLOR_ALPHA(GRAY, 0x7F));
+	char *title = "Adrenaline Menu";
+	pgf_draw_textf(WINDOW_X + ALIGN_CENTER(WINDOW_WIDTH, vita2d_pgf_text_width(font, FONT_SIZE, title)), FONT_Y_LINE(0), WHITE, FONT_SIZE, title);
+
+	if (tab_sel == 0) {
+		// Running app info
+		SceAdrenaline *adrenaline = (SceAdrenaline *)ScePspemuConvertAddress(ADRENALINE_ADDRESS, KERMIT_INPUT_MODE, ADRENALINE_SIZE);
+
+		char info[143] = {0};
+		if (strcmp(adrenaline->title, "XMB\xE2\x84\xA2") == 0) {
+			snprintf(info, 128, "XMB");
+		} else {
+			int res = 0;
+
+			if (adrenaline->title[0] != 0) {
+				res = snprintf(info, 128, "%s - ", adrenaline->title);
+			}
+
+			if (adrenaline->titleid[0] != 0) {
+				snprintf(info+res, 13, "%s", adrenaline->titleid);
+			}
+		}
+
+		vita2d_draw_rectangle(WINDOW_X, FONT_Y_LINE(1) + 9.0f, WINDOW_WIDTH, 28.0f, COLOR_ALPHA(0xFFFF1F7F, 0x7F));
+		pgf_draw_textf(WINDOW_X + ALIGN_CENTER(WINDOW_WIDTH, vita2d_pgf_text_width(font, FONT_SIZE, info)), FONT_Y_LINE(1) + 10.0f, WHITE, FONT_SIZE, info);
+	}
+
+	// Draw tabs
+	int i;
+	for (i = 0; i < N_TABS; i++) {
+		vita2d_draw_rectangle(WINDOW_X + (i * TAB_SIZE), FONT_Y_LINE(19) - 5.0f, TAB_SIZE, 38.0f, tab_sel == i ? 0xFF7F3F00 : COLOR_ALPHA(GRAY, 0x8F));
+
+		if (i != 0) {
+			vita2d_draw_rectangle(WINDOW_X + (i * TAB_SIZE) - 2.0f, FONT_Y_LINE(19) - 5.0f, 4.0f, 38.0f, COLOR_ALPHA(BLACK, 0x8F));
+		}
+
+		float x = WINDOW_X + (i * TAB_SIZE) + ALIGN_CENTER(TAB_SIZE, vita2d_pgf_text_width(font, FONT_SIZE, tab_entries[i].name));
+		pgf_draw_text(x, FONT_Y_LINE(19), WHITE, FONT_SIZE, tab_entries[i].name);
+	}
+
+	// Draw entries
+	MenuEntry *menu_entries = tab_entries[tab_sel].entries;
+	if (menu_entries) {
+		for (i = 0; i < tab_entries[tab_sel].n_entries; i++) {
+			float y = (tab_sel == 0) ? FONT_Y_LINE(3 + i) : FONT_Y_LINE(2 + i);
+
+			uint32_t color = WHITE;
+			if (menu_entries[i].type == MENU_ENTRY_TYPE_TEXT) {
+				color = menu_entries[i].color;
+			}
+
+			// Focus
+			if (i == menu_sel && tab_entries[tab_sel].moveable) {
+				vita2d_draw_rectangle(WINDOW_X, y + 3.0f, WINDOW_WIDTH, FONT_Y_SPACE, COLOR_ALPHA(0xFFFF1F7F, 0x8F));
+			}
+
+			if (menu_entries[i].type == MENU_ENTRY_TYPE_TEXT || menu_entries[i].type == MENU_ENTRY_TYPE_CALLBACK) {
+				// Item
+				float x = vita2d_pgf_text_width(font, FONT_SIZE, menu_entries[i].name);
+				pgf_draw_text(ALIGN_CENTER(SCREEN_WIDTH, x), y, color, FONT_SIZE, menu_entries[i].name);
+			} else {
+				// Item
+				float x = vita2d_pgf_text_width(font, FONT_SIZE, menu_entries[i].name);
+				pgf_draw_text(ALIGN_RIGHT((SCREEN_WIDTH / 2.0f) - 10.0f, x), y, color, FONT_SIZE, menu_entries[i].name);
+
+				if (menu_entries[i].type == MENU_ENTRY_TYPE_OPTION) {
+					// Option
+					uint8_t value = *((uint8_t*)menu_entries[i].value);
+					pgf_draw_text((SCREEN_WIDTH / 2.0f) + 10.0f, y, GREEN, FONT_SIZE, menu_entries[i].options[value]);
+				} else if (menu_entries[i].type == MENU_ENTRY_TYPE_SCALE) {
+						// Option
+					float *value = (float *)menu_entries[i].value;
+					pgf_draw_textf((SCREEN_WIDTH / 2.0f) + 10.0f, y, GREEN, FONT_SIZE, "%.03f", *value);
+				}
+			}
+		}
+		// Info about PSP CFW change
+		if (tab_sel == 2 && menu_sel == 0) {
+			char *title = "Changing Custom Firmware requires to close and reopen Adrenaline to take effect.";
+			pgf_draw_textf(WINDOW_X + ALIGN_CENTER(WINDOW_WIDTH, vita2d_pgf_text_width(font, FONT_SIZE, title)), FONT_Y_LINE(17), WHITE, FONT_SIZE, title);
+		}
+		// Info about Original filter
+		if (tab_sel == 2 && menu_sel == 1 && config.graphics_filtering == 0) {
+			char *title = "All graphics related options are not taking effect with the Original rendering mode.";
+			pgf_draw_textf(WINDOW_X + ALIGN_CENTER(WINDOW_WIDTH, vita2d_pgf_text_width(font, FONT_SIZE, title)), FONT_Y_LINE(17), WHITE, FONT_SIZE, title);
+		}
+	} else {
+		drawStates();
+	}
+}
+
+void ctrlMenu() {
+	if (released_pad[PAD_PSBUTTON]) {
+		ExitAdrenalineMenu();
+	}
+
+	if (!open_options) {
+		if (released_pad[PAD_CANCEL]) {
+			ExitAdrenalineMenu();
+		}
+
+		if (pressed_pad[PAD_LTRIGGER]) {
+			if (tab_sel == 2 && changed) {
+				SaveAdrSetting();
+			}
+
+			if (tab_sel > 0) {
+				menu_sel = 0;
+				tab_sel--;
+			} else if (tab_sel == 0) {
+				menu_sel = 0;
+				tab_sel = N_TABS-1;
+			}
+
+
+		}
+
+		if (pressed_pad[PAD_RTRIGGER]) {
+			if (tab_sel == 2 && changed) {
+				SaveAdrSetting();
+			}
+			if (tab_sel < N_TABS-1) {
+				menu_sel = 0;
+				tab_sel++;
+			} else if (tab_sel == N_TABS-1) {
+				menu_sel = 0;
+				tab_sel = 0;
+			}
+		}
+
+		// SQUARE on Settings tab when on graphical options (filter, screen scale).
+		if (pressed_pad[PAD_SQUARE] && tab_sel == 2 && menu_sel >= 1 && menu_sel <= 10) {
+			g_hide_menu = 1;
+		}
+		if (released_pad[PAD_SQUARE] || tab_sel != 2 || (tab_sel == 2 && (menu_sel < 1 || menu_sel > 10))) {
+			g_hide_menu = 0;
+		}
+	}
+
+	// Savestates
+	if (tab_sel == 1) {
+		ctrlStates();
+	} else {
+		if (tab_entries[tab_sel].moveable) {
+			MenuEntry *menu_entries = tab_entries[tab_sel].entries;
+			if (menu_entries) {
+				if (menu_entries[menu_sel].type == MENU_ENTRY_TYPE_CALLBACK) {
+					if (released_pad[PAD_ENTER]) {
+						if (menu_entries[menu_sel].callback) {
+							menu_entries[menu_sel].callback();
+						}
+					}
+				} else if (menu_entries[menu_sel].type == MENU_ENTRY_TYPE_OPTION) {
+					if (released_pad[PAD_RIGHT] || released_pad[PAD_LEFT_ANALOG_RIGHT] || released_pad[PAD_ENTER]) {
+						if ((*menu_entries[menu_sel].value) < menu_entries[menu_sel].n_options-1) {
+							(*menu_entries[menu_sel].value)++;
+						} else {
+							(*menu_entries[menu_sel].value) = 0;
+						}
+					}
+
+					if (released_pad[PAD_LEFT] || released_pad[PAD_LEFT_ANALOG_LEFT]) {
+						if ((*menu_entries[menu_sel].value) > 0) {
+							(*menu_entries[menu_sel].value)--;
+						} else {
+							(*menu_entries[menu_sel].value) = menu_entries[menu_sel].n_options-1;
+						}
+					}
+
+					changed = 1;
+				} else if (menu_entries[menu_sel].type == MENU_ENTRY_TYPE_SCALE) {
+					if (hold2_pad[PAD_RIGHT] || hold2_pad[PAD_LEFT_ANALOG_RIGHT] || hold2_pad[PAD_ENTER]) {
+						float *a = (float *)menu_entries[menu_sel].value;
+						(*a) += 0.005f;
+					}
+
+					if (hold2_pad[PAD_LEFT] || hold2_pad[PAD_LEFT_ANALOG_LEFT]) {
+						float *a = (float *)menu_entries[menu_sel].value;
+						if (*a > 0.005f) {
+							(*a) -= 0.005f;
+						}
+					}
+
+					changed = 1;
+				}
+			}
+
+			if ((hold_pad[PAD_UP] || hold_pad[PAD_LEFT_ANALOG_UP]) && !g_hide_menu) {
+				if (menu_sel > 0) {
+					menu_sel--;
+				}
+			}
+
+			if ((hold_pad[PAD_DOWN] || hold_pad[PAD_LEFT_ANALOG_DOWN]) && !g_hide_menu) {
+				if (menu_sel < tab_entries[tab_sel].n_entries-1) {
+					menu_sel++;
+				}
+			}
+		}
+	}
+}
+
+void getPspScreenScale(float *scale_x, float *scale_y) {
+	*scale_x = config.psp_screen_scale_x;
+	*scale_y = config.psp_screen_scale_y;
+}
+
+void getPopsScreenScale(float *scale_x, float *scale_y) {
+	*scale_x = config.ps1_screen_scale_x;
+	*scale_y = config.ps1_screen_scale_y;
+}
+
+void *pops_data = NULL;
+
+/* GePatch's settings, in Adrenaline's page where its PSP side reads them.
+   Written through ScePspemu's plain view (no cache maintenance), in a cache
+   line only this side writes. */
+extern volatile uint32_t last_video_decode; /* main.c */
+
+static void publishNativeSettings(void) {
+	/* "Native Video": on while ScePspemu decodes a movie (within half a
+	   second: movies run at 10-30 frames per second) */
+	uint32_t decoded = last_video_decode;
+	/* bit 0: ScePspemu decoded a movie frame lately (it comes late and with
+	   gaps: GePatch also knows a movie by its draws) */
+	uint32_t video = decoded && sceKernelGetProcessTimeLow() - decoded < 500000 ? 1 : 0;
+	video |= NATIVE_VIDEO_TWO_BUFFERS; /* (we show the buffer NATIVE_FRONT names) */
+	/* the line holding both words, written back so the PSP side sees them;
+	   every frame: the PSP side clears the page when it boots, and this
+	   side's cached copy would still show the old words */
+	volatile uint32_t *line = (volatile uint32_t *)ScePspemuConvertAddress(NATIVE_MODE, KERMIT_OUTPUT_MODE, 64);
+	/* not 0: an Adrenaline with this side (GePatch: 960x544) */
+	line[0] = 2;
+	line[1] = video;
+	ScePspemuWritebackCache((void *)line, 64);
+}
+
+/* GePatch's frame at the size and in the format it says (565 960x544 from
+   versions that say nothing): textures over NATIVE_FRAMEBUFFER, one per kind. */
+static uint32_t native_smooth; /* GePatch: scale this frame smoothly */
+/* vita2d's own projection, what its texture shaders expect (the f.lux one is
+   laid out the other way: the frame came out a line) */
+extern float _vita2d_ortho_matrix[4 * 4];
+
+/* GePatch's frame over the whole screen through `shader` (the filter chosen
+   in the settings). vita2d gives a filter the texture's size as the video's
+   and twice it as the output's -- true for 480x272 only: at 720x408 the
+   filters scaled by 2 into a 960x544 screen. Here the sizes are the frame's
+   and the screen's. */
+static void drawGeFrame(const vita2d_texture *tex, uint32_t w, uint32_t h, const vita2d_shader *shader, const float *wvp) {
+	const float video[2] = { (float)w, (float)h }, output[2] = { 960.0f, 544.0f };
+	vita2d_texture_vertex *v = (vita2d_texture_vertex *)vita2d_pool_memalign(4 * sizeof(vita2d_texture_vertex), sizeof(vita2d_texture_vertex));
+	uint16_t *indices = (uint16_t *)vita2d_pool_memalign(4 * sizeof(uint16_t), sizeof(uint16_t));
+	void *buffer;
+	int i;
+	if (!v || !indices)
+		return;
+	sceGxmSetVertexProgram(_vita2d_context, shader->vertexProgram);
+	sceGxmSetFragmentProgram(_vita2d_context, shader->fragmentProgram);
+	sceGxmReserveVertexDefaultUniformBuffer(_vita2d_context, &buffer);
+	sceGxmSetUniformDataF(buffer, shader->wvpParam, 0, 16, wvp);
+	if (shader->vertexInput.texture_size) sceGxmSetUniformDataF(buffer, shader->vertexInput.texture_size, 0, 2, video);
+	if (shader->vertexInput.video_size) sceGxmSetUniformDataF(buffer, shader->vertexInput.video_size, 0, 2, video);
+	if (shader->vertexInput.output_size) sceGxmSetUniformDataF(buffer, shader->vertexInput.output_size, 0, 2, output);
+	if (shader->fragmentInput.texture_size || shader->fragmentInput.video_size || shader->fragmentInput.output_size) {
+		sceGxmReserveFragmentDefaultUniformBuffer(_vita2d_context, &buffer);
+		if (shader->fragmentInput.texture_size) sceGxmSetUniformDataF(buffer, shader->fragmentInput.texture_size, 0, 2, video);
+		if (shader->fragmentInput.video_size) sceGxmSetUniformDataF(buffer, shader->fragmentInput.video_size, 0, 2, video);
+		if (shader->fragmentInput.output_size) sceGxmSetUniformDataF(buffer, shader->fragmentInput.output_size, 0, 2, output);
+	}
+	for (i = 0; i < 4; i++) {
+		v[i].x = (i & 1) ? 960.0f : 0.0f;
+		v[i].y = (i & 2) ? 544.0f : 0.0f;
+		v[i].z = 0.5f;
+		v[i].w = 1.0f;
+		v[i].u = (i & 1) ? 1.0f : 0.0f;
+		v[i].v = (i & 2) ? 1.0f : 0.0f;
+		indices[i] = (uint16_t)i;
+	}
+	sceGxmSetFragmentTexture(_vita2d_context, 0, &tex->gxm_tex);
+	sceGxmSetVertexStream(_vita2d_context, 0, v);
+	sceGxmDraw(_vita2d_context, SCE_GXM_PRIMITIVE_TRIANGLE_STRIP, SCE_GXM_INDEX_FORMAT_U16, indices, 4);
+}
+
+/* GePatch's display buffer done last: its GE names it in NATIVE_FRONT (a
+   version that does not keeps it 0) -- the other may be being written */
+static uint32_t nativeFront(void) {
+	volatile uint32_t *front = (volatile uint32_t *)ScePspemuConvertAddress(NATIVE_FRONT, KERMIT_INPUT_MODE, 64);
+	return front[0] == 1 ? NATIVE_FRAMEBUFFER2 : NATIVE_FRAMEBUFFER;
+}
+
+static vita2d_texture *nativeFrame(vita2d_texture *fallback, uint32_t *w, uint32_t *h) {
+	static vita2d_texture *textures[16];
+	static uint32_t keys[16], count;
+	static const SceGxmTextureFormat formats[4] = {
+		SCE_GXM_TEXTURE_FORMAT_U5U6U5_BGR, SCE_GXM_TEXTURE_FORMAT_X1U5U5U5_1BGR,
+		SCE_GXM_TEXTURE_FORMAT_X4U4U4U4_1BGR, SCE_GXM_TEXTURE_FORMAT_X8U8U8U8_1BGR,
+	};
+	/* the PSP side writes this line (and only it): dropping our copy of it
+	   each frame keeps size and format current */
+	volatile uint32_t *line = (volatile uint32_t *)ScePspemuConvertAddress(DRAW_NATIVE, KERMIT_INPUT_MODE, 64);
+	uint32_t size = line[(NATIVE_FRAME_SIZE - DRAW_NATIVE) / 4];
+	uint32_t format = line[(NATIVE_FRAME_FORMAT - DRAW_NATIVE) / 4];
+	native_smooth = (format & NATIVE_FRAME_SMOOTH) != 0;
+	format &= ~NATIVE_FRAME_SMOOTH;
+	*w = size & 0xFFFF;
+	*h = size >> 16;
+	if (!*w || *w > SCREEN_WIDTH || !*h || *h > SCREEN_HEIGHT || (*w & 7) || format > 3) {
+		*w = SCREEN_WIDTH;
+		*h = SCREEN_HEIGHT;
+		return fallback;
+	}
+	const uint32_t buffer = nativeFront();
+	uint32_t key = size ^ (format << 28) ^ (buffer == NATIVE_FRAMEBUFFER2 ? 0x08000000 : 0);
+	for (uint32_t i = 0; i < count; i++)
+		if (keys[i] == key)
+			return textures[i];
+	/* The whole display buffer for the GPU, once: vita2d maps exactly a
+	   texture's size, and the 1 MiB it mapped for the 565 texture cannot be
+	   mapped again larger (8888 720x408 is 1.17 MiB): the GPU faulted. */
+	static int mapped;
+	void *data = (void *)CONVERT_ADDRESS(NATIVE_FRAMEBUFFER);
+	if (!mapped) {
+		sceGxmUnmapMemory(data);
+		mapped = sceGxmMapMemory(data, 0x200000, SCE_GXM_MEMORY_ATTRIB_READ | SCE_GXM_MEMORY_ATTRIB_WRITE) >= 0 ? 1 : -1;
+		if (mapped < 0) /* put the 565 mapping back */
+			sceGxmMapMemory(data, SCREEN_WIDTH * SCREEN_HEIGHT * 2, SCE_GXM_MEMORY_ATTRIB_READ | SCE_GXM_MEMORY_ATTRIB_WRITE);
+	}
+	static vita2d_texture own[16];
+	if (mapped < 0 || count == 16) {
+		*w = SCREEN_WIDTH;
+		*h = SCREEN_HEIGHT;
+		return fallback;
+	}
+	vita2d_texture *t = &own[count];
+	memset(t, 0, sizeof(*t));
+	t->data_UID = -1;
+	if (sceGxmTextureInitLinear(&t->gxm_tex, (void *)CONVERT_ADDRESS(buffer), formats[format], *w, *h, 0) < 0) {
+		*w = SCREEN_WIDTH;
+		*h = SCREEN_HEIGHT;
+		return fallback;
+	}
+	keys[count] = key;
+	textures[count++] = t;
+	return t;
+}
+
+/* R + SELECT: GePatch's frame as shown, to ux0:data/AdrenalineGE/shotNN.bmp
+   (24-bit, at its own size). The Vita's own screenshot cannot see it. */
+static void nativeSnapshot(void) {
+	static uint32_t shots;
+	static uint8_t line[SCREEN_WIDTH * 3];
+	volatile uint32_t *words = (volatile uint32_t *)ScePspemuConvertAddress(DRAW_NATIVE, KERMIT_INPUT_MODE, 64);
+	uint32_t size = words[(NATIVE_FRAME_SIZE - DRAW_NATIVE) / 4];
+	uint32_t format = words[(NATIVE_FRAME_FORMAT - DRAW_NATIVE) / 4] & ~NATIVE_FRAME_SMOOTH;
+	uint32_t w = size & 0xFFFF, h = size >> 16;
+	if (!w || w > SCREEN_WIDTH || !h || h > SCREEN_HEIGHT || format > 3) {
+		w = SCREEN_WIDTH; h = SCREEN_HEIGHT; format = 0; /* versions that say nothing */
+	}
+	if (shots >= 100)
+		return;
+	char path[64];
+	sceIoMkdir("ux0:data/AdrenalineGE", 0777);
+	/* named by the time: a new run of Adrenaline does not write over the last */
+	snprintf(path, sizeof(path), "ux0:data/AdrenalineGE/shot_%08x.bmp", (unsigned)sceKernelGetProcessTimeLow());
+	shots++;
+	SceUID fd = sceIoOpen(path, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+	if (fd < 0)
+		return;
+	uint32_t pitch = w * 3, file_size = 54 + pitch * h;
+	uint8_t hdr[54];
+	memset(hdr, 0, sizeof(hdr));
+	hdr[0] = 'B'; hdr[1] = 'M';
+	memcpy(hdr + 2, &file_size, 4);
+	hdr[10] = 54; hdr[14] = 40;
+	memcpy(hdr + 18, &w, 4);
+	memcpy(hdr + 22, &h, 4);
+	hdr[26] = 1; hdr[28] = 24;
+	sceIoWrite(fd, hdr, sizeof(hdr));
+	const uint8_t *frame = (const uint8_t *)CONVERT_ADDRESS(nativeFront());
+	uint32_t bpp = format == 3 ? 4 : 2; /* rows are w pixels apart */
+	for (uint32_t y = h; y-- > 0;) { /* bottom-up */
+		const uint8_t *src = frame + y * w * bpp;
+		for (uint32_t x = 0; x < w; x++) {
+			uint32_t r, g, b;
+			if (format == 3) {
+				uint32_t c = ((const uint32_t *)src)[x];
+				r = c & 0xFF; g = (c >> 8) & 0xFF; b = (c >> 16) & 0xFF;
+			} else {
+				uint32_t c = ((const uint16_t *)src)[x];
+				if (format == 0) { r = (c & 31) << 3; g = ((c >> 5) & 63) << 2; b = ((c >> 11) & 31) << 3; }
+				else if (format == 1) { r = (c & 31) << 3; g = ((c >> 5) & 31) << 3; b = ((c >> 10) & 31) << 3; }
+				else { r = (c & 15) << 4; g = ((c >> 4) & 15) << 4; b = ((c >> 8) & 15) << 4; }
+			}
+			line[x * 3] = b; line[x * 3 + 1] = g; line[x * 3 + 2] = r;
+		}
+		sceIoWrite(fd, line, pitch);
+	}
+	sceIoClose(fd);
+	sceClibPrintf("[adr] snapshot %s %ux%u format %u\n", path, (unsigned)w, (unsigned)h, (unsigned)format);
+}
+
+int AdrenalineDraw(SceSize args, void *argp) {
+	sceAppUtilSystemParamGetInt(SCE_SYSTEM_PARAM_ID_LANG, &language);
+	sceAppUtilSystemParamGetInt(SCE_SYSTEM_PARAM_ID_ENTER_BUTTON, &enter_button);
+	sceAppUtilSystemParamGetInt(SCE_SYSTEM_PARAM_ID_DATE_FORMAT, &date_format);
+	sceAppUtilSystemParamGetInt(SCE_SYSTEM_PARAM_ID_TIME_FORMAT, &time_format);
+
+	vita2d_init();
+	font = vita2d_load_default_pgf();
+
+	vita2d_texture *native_tex = vita2d_create_empty_texture_data(SCREEN_WIDTH, SCREEN_HEIGHT, (void *)CONVERT_ADDRESS(NATIVE_FRAMEBUFFER), SCE_GXM_TEXTURE_FORMAT_U5U6U5_BGR);
+	if (!native_tex) {
+		return -1;
+	}
+
+	vita2d_texture *psp_tex = vita2d_create_empty_texture(PSP_SCREEN_LINE, PSP_SCREEN_HEIGHT);
+	if (!psp_tex) {
+		return -1;
+	}
+
+	void *psp_data = vita2d_texture_get_datap(psp_tex);
+
+	vita2d_texture *pops_tex = vita2d_create_empty_texture_format(SCREEN_LINE, SCREEN_HEIGHT, SCE_GXM_TEXTURE_FORMAT_X8U8U8U8_1BGR);
+	if (!pops_tex) {
+		return -1;
+	}
+
+	pops_data = vita2d_texture_get_datap(pops_tex);
+
+	vita2d_shader *opaque_shader = vita2d_create_shader((SceGxmProgram *)opaque_v, (SceGxmProgram *)texture_f);
+	vita2d_shader *sharp_shader = vita2d_create_shader((SceGxmProgram *)sharp_bilinear_v, (SceGxmProgram *)sharp_bilinear_f);
+	vita2d_shader *advanced_aa_shader = vita2d_create_shader((SceGxmProgram *)advanced_aa_v, (SceGxmProgram *)advanced_aa_f);
+	vita2d_shader *lcd3x_shader = vita2d_create_shader((SceGxmProgram *)lcd3x_v, (SceGxmProgram *)lcd3x_f);
+	vita2d_shader *sharp_simple_shader = vita2d_create_shader((SceGxmProgram *)sharp_bilinear_simple_v, (SceGxmProgram *)sharp_bilinear_simple_f);
+	vita2d_shader *scale2x_shader = vita2d_create_shader((SceGxmProgram *)scale2x_v, (SceGxmProgram *)scale2x_f);
+	vita2d_shader *scale2x_plus_shader = vita2d_create_shader((SceGxmProgram *)scale2x_plus_v, (SceGxmProgram *)scale2x_plus_f);
+	vita2d_shader *scale3x_shader = vita2d_create_shader((SceGxmProgram *)scale3x_v, (SceGxmProgram *)scale3x_f);
+	vita2d_shader *overlay_shader = vita2d_create_shader((SceGxmProgram *)texture_v, (SceGxmProgram *)texture_f);
+
+	// f.lux shader
+	vita2d_shader *flux_shader = vita2d_create_shader_untextured((SceGxmProgram *)gxm_program_vflux_v, (SceGxmProgram *)gxm_program_vflux_f);
+
+	// f.lux vertices
+	SceUID flux_vertices_id = sceKernelAllocMemBlock("flux vertices", SCE_KERNEL_MEMBLOCK_TYPE_USER_RW, ALIGN(sizeof(float)*12, 4 * 1024), NULL);
+	float *flux_vertices;
+	sceKernelGetMemBlockBase(flux_vertices_id, (void **)&flux_vertices);
+	flux_vertices[0] = 0.0f;
+	flux_vertices[1] = 0.0f;
+	flux_vertices[2] = 0.5f;
+	flux_vertices[3] = 0.0f;
+	flux_vertices[4] = 544.0f;
+	flux_vertices[5] = 0.5f;
+	flux_vertices[6] = 960.0f;
+	flux_vertices[7] = 544.0f;
+	flux_vertices[8] = 0.5f;
+	flux_vertices[9] = 960.0f;
+	flux_vertices[10] = 0.0f;
+	flux_vertices[11] = 0.5f;
+	sceGxmMapMemory(flux_vertices, ALIGN(sizeof(float)*12, 4 * 1024), SCE_GXM_MEMORY_ATTRIB_READ);
+
+	// f.lux indices
+	SceUID flux_indices_id = sceKernelAllocMemBlock( "flux indices", SCE_KERNEL_MEMBLOCK_TYPE_USER_RW, ALIGN(sizeof(uint16_t)*4, 4 * 1024), NULL);
+	uint16_t *flux_indices;
+	sceKernelGetMemBlockBase(flux_indices_id, (void **)&flux_indices);
+	for (int i=0;i<4;i++){
+		flux_indices[i] = i;
+	}
+	sceGxmMapMemory(flux_indices, ALIGN(sizeof(uint16_t)*4, 4 * 1024), SCE_GXM_MEMORY_ATTRIB_READ);
+
+	// f.lux model-view-projection matrix
+	matrix4x4 projection, modelview, mvp;
+	matrix4x4_identity(modelview);
+	matrix4x4_init_orthographic(projection, 0, 960, 544, 0, -1, 1);
+	matrix4x4_multiply(mvp, projection, modelview);
+
+	// f.lux shaders uniforms
+	SceGxmProgramParameter *vflux_color_param = sceGxmProgramFindParameterByName(gxm_program_vflux_f, "color");
+	SceGxmProgramParameter *vflux_wvp_param = sceGxmProgramFindParameterByName(gxm_program_vflux_v, "wvp");
+
+	vita2d_shader *shader = opaque_shader;
+
+	settings_semaid = sceKernelCreateSema("AdrenalineSettingsSemaphore", 0, 0, 1, NULL);
+	if (settings_semaid < 0) {
+		return settings_semaid;
+	}
+
+	// FPS counting
+	// SceUInt64 cur_micros = 0, delta_micros = 0, last_micros = 0;
+	// uint32_t frames = 0;
+	// float fps = 0.0f;
+
+	// keep track of entering pops mode
+	int lastPops = 0;
+
+	while (1) {
+		int draw_native = *(uint32_t *)CONVERT_ADDRESS(DRAW_NATIVE);
+		SceAdrenaline *adrenaline = (SceAdrenaline *)CONVERT_ADDRESS(ADRENALINE_ADDRESS);
+
+		// pause/unpause pops once after switching from psp to pops mode
+		// this pause/unpause fixes slowdown in PS1 games that used to require manually entering/exiting menu
+		if (!adrenaline->pops_mode) {
+			lastPops = 0;
+		}
+
+		if (adrenaline->pops_mode && lastPops == 0) {
+			ScePspemuPausePops(1);
+			sceDisplayWaitVblankStart();
+			ScePspemuPausePops(0);
+			sceDisplayWaitVblankStart();
+			lastPops = 1;
+		}
+
+		// Draw savestate screen
+		if (adrenaline->savestate_mode != SAVESTATE_MODE_NONE) {
+			vita2d_start_drawing();
+			vita2d_clear_screen();
+
+			char *title = "Please wait...";
+			pgf_draw_textf(ALIGN_CENTER(SCREEN_WIDTH, vita2d_pgf_text_width(font, FONT_SIZE, title)), FONT_Y_LINE(8), WHITE, FONT_SIZE, title);
+
+			// End drawing
+			vita2d_end_drawing();
+			vita2d_swap_buffers();
+
+			// Sync
+			if (!adrenaline->pops_mode)
+				sceCompatLCDCSync();
+
+			continue;
+		}
+
+		// Read pad
+		readPad();
+
+		// Double click detection
+		if (menu_open == 0) {
+			if (doubleClick(SCE_CTRL_PSBUTTON, 300 * 1000)) {
+				stopUsb(usbdevice_modid);
+
+				if (sceAppMgrLaunchAppByName2(ADRENALINE_TITLEID, NULL, NULL) < 0) {
+					ScePspemuErrorExit(0);
+				}
+			}
+		}
+
+		// R + SELECT: a snapshot of GePatch's frame (pressed, not held)
+		{
+			static int snap_held;
+			int snap = !adrenaline->pops_mode && current_pad[PAD_RTRIGGER] && current_pad[PAD_SELECT];
+			if (snap && !snap_held && *(uint32_t *)CONVERT_ADDRESS(DRAW_NATIVE))
+				nativeSnapshot();
+			snap_held = snap;
+		}
+
+		// Fast forward in pops
+		if (adrenaline->pops_mode) {
+			// FSM for button combination
+			static int combo_state = 0;
+			if (current_pad[PAD_LTRIGGER] && current_pad[PAD_SELECT]) {
+				combo_state = 1;
+			} else {
+				if (combo_state == 1) {
+					combo_state = 2;
+				} else {
+					combo_state = 0;
+				}
+			}
+
+			if (combo_state == 2) {
+				uint8_t *val = (uint8_t *)ScePspemuConvertAddress(0xABCD00A9, KERMIT_OUTPUT_MODE, 1);
+				*val = !(*val);
+				ScePspemuWritebackCache(val, 1);
+				combo_state = 0;
+			}
+		}
+
+		// Do not draw if dialog is running
+		publishNativeSettings();
+		int ge_frame = !adrenaline->pops_mode && !draw_native && grHasFrame();
+		if (sceCommonDialogIsRunning() || (config.graphics_filtering == 0 && menu_open == 0 && draw_native == 0 && !ge_frame)) {
+			sceDisplayWaitVblankStart();
+
+			continue;
+		}
+
+		// The GE renderer's frames, into its render targets
+		if (ge_frame)
+			grRender();
+
+		// Draw display
+		vita2d_start_drawing();
+		vita2d_clear_screen();
+
+		// Select shader
+		if (config.graphics_filtering == 1) {
+			shader = opaque_shader;
+		} else if (config.graphics_filtering == 2) {
+			shader = sharp_shader;
+		} else if (config.graphics_filtering == 3) {
+			shader = advanced_aa_shader;
+		} else if (config.graphics_filtering == 4) {
+			shader = lcd3x_shader;
+		} else if (config.graphics_filtering == 5) {
+			shader = sharp_simple_shader;
+		} else if (config.graphics_filtering == 6) {
+			shader = scale2x_shader;
+		} else if (config.graphics_filtering == 7) {
+			shader = scale2x_plus_shader;
+		} else if (config.graphics_filtering == 8) {
+			shader = scale3x_shader;
+		} else {
+			shader = opaque_shader;
+		}
+
+		vita2d_texture_set_program(shader->vertexProgram, shader->fragmentProgram);
+		vita2d_texture_set_wvp(shader->wvpParam);
+		vita2d_texture_set_vertexInput(&shader->vertexInput);
+		vita2d_texture_set_fragmentInput(&shader->fragmentInput);
+
+		// Smooth
+		if (config.no_smooth_graphics == 0) {
+			vita2d_texture_set_filters(psp_tex, SCE_GXM_TEXTURE_FILTER_LINEAR, SCE_GXM_TEXTURE_FILTER_LINEAR);
+			vita2d_texture_set_filters(pops_tex, SCE_GXM_TEXTURE_FILTER_LINEAR, SCE_GXM_TEXTURE_FILTER_LINEAR);
+		} else {
+			vita2d_texture_set_filters(psp_tex, SCE_GXM_TEXTURE_FILTER_POINT, SCE_GXM_TEXTURE_FILTER_POINT);
+			vita2d_texture_set_filters(pops_tex, SCE_GXM_TEXTURE_FILTER_POINT, SCE_GXM_TEXTURE_FILTER_POINT);
+		}
+
+		if (ge_frame && grPresent()) {
+			// the GE renderer drew the PSP frame at the Vita's resolution
+		} else if ((!adrenaline->pops_mode && !draw_native) || adrenaline->draw_psp_screen_in_pops) {
+			// Copy PSP framebuffer
+			sceDmacMemcpy(psp_data, (void *)SCE_PSPEMU_FRAMEBUFFER, SCE_PSPEMU_FRAMEBUFFER_SIZE);
+
+			// Draw psp screen
+			float scale_x = 2.00f;
+			float scale_y = 2.00f;
+			getPspScreenScale(&scale_x, &scale_y);
+			vita2d_draw_texture_scale_rotate_hotspot(psp_tex, 480.0f, 272.0f, scale_x, scale_y, 0.0, 240.0, 136.0);
+		} else if (draw_native) {
+			uint32_t w, h;
+			vita2d_texture *tex = nativeFrame(native_tex, &w, &h);
+			/* the filter and smoothing chosen in the settings, at any size;
+			   a movie with "On (smooth)" plainly smoothed */
+			const vita2d_shader *frame_shader = native_smooth ? opaque_shader : shader;
+			if (native_smooth || config.no_smooth_graphics == 0)
+				vita2d_texture_set_filters(tex, SCE_GXM_TEXTURE_FILTER_LINEAR, SCE_GXM_TEXTURE_FILTER_LINEAR);
+			else
+				vita2d_texture_set_filters(tex, SCE_GXM_TEXTURE_FILTER_POINT, SCE_GXM_TEXTURE_FILTER_POINT);
+			drawGeFrame(tex, w, h, frame_shader, _vita2d_ortho_matrix);
+		} else {
+			// Draw pops screen
+			float scale_x = 1.0f;
+			float scale_y = 1.0f;
+			getPopsScreenScale(&scale_x, &scale_y);
+			vita2d_draw_texture_scale_rotate_hotspot(pops_tex, 480.0f, 272.0f, scale_x, scale_y, 0.0, 480.0, 272.0);
+			if (overlay_texture) {
+				vita2d_texture_set_program(overlay_shader->vertexProgram, overlay_shader->fragmentProgram);
+				vita2d_texture_set_wvp(overlay_shader->wvpParam);
+				vita2d_texture_set_vertexInput(&overlay_shader->vertexInput);
+				vita2d_texture_set_fragmentInput(&overlay_shader->fragmentInput);
+
+				vita2d_texture_set_filters(overlay_texture, SCE_GXM_TEXTURE_FILTER_LINEAR, SCE_GXM_TEXTURE_FILTER_LINEAR);
+				vita2d_draw_texture_scale_rotate_hotspot(overlay_texture, 480.0f, 272.0f, scale_x, scale_y, 0.0, 480.0, 272.0);
+			}
+		}
+
+
+
+		// Draw Menu
+		if (menu_open && !g_hide_menu) {
+			drawMenu();
+		}
+
+		// f.lux filter drawing
+		if (config.flux_mode != 0) {
+			uint8_t flux_idx = (config.flux_mode * 4) - 1;
+
+			// Updating our rectangle alpha value depending on daytime
+			SceDateTime time;
+			sceRtcGetCurrentClockLocalTime(&time);
+			if (time.hour < 6)       // Night/Early Morning
+				flux_colors[flux_idx] = 0.25f;
+			else if (time.hour < 10) // Morning/Early Day
+				flux_colors[flux_idx] = 0.1f;
+			else if (time.hour < 15) // Mid day
+				flux_colors[flux_idx] = 0.05f;
+			else if (time.hour < 19) // Late day
+				flux_colors[flux_idx] = 0.15f;
+			else                     // Evening/Night
+				flux_colors[flux_idx] = 0.2f;
+
+			// Setting vertex and fragment program for f.lux
+			sceGxmSetVertexProgram(_vita2d_context, flux_shader->vertexProgram);
+			sceGxmSetFragmentProgram(_vita2d_context, flux_shader->fragmentProgram);
+
+			// Setting color uniform
+			void *rgba_buffer, *wvp_buffer;
+			sceGxmReserveFragmentDefaultUniformBuffer(_vita2d_context, &rgba_buffer);
+			sceGxmSetUniformDataF(rgba_buffer, vflux_color_param, 0, 4, &flux_colors[(config.flux_mode - 1) * 4]);
+
+			// Setting wvp uniform
+			sceGxmReserveVertexDefaultUniformBuffer(_vita2d_context, &wvp_buffer);
+			sceGxmSetUniformDataF(wvp_buffer, vflux_wvp_param, 0, 16, (const float*)mvp);
+
+			// Performing f.lux filter draw
+			sceGxmSetVertexStream(_vita2d_context, 0, flux_vertices);
+			sceGxmDraw(_vita2d_context, SCE_GXM_PRIMITIVE_TRIANGLE_FAN, SCE_GXM_INDEX_FORMAT_U16, flux_indices, 4);
+		}
+
+		// Show FPS
+		// pgf_draw_textf(0.0f, 0.0f, WHITE, FONT_SIZE, "FPS: %.2f", fps);
+
+		// Calculate FPS
+		// cur_micros = sceKernelGetProcessTimeWide();
+		// if (cur_micros >= (last_micros + 1000000)) {
+		//   delta_micros = cur_micros - last_micros;
+		//   last_micros = cur_micros;
+		//   fps = (frames / (double)delta_micros) * 1000000.0f;
+		//   frames = 0;
+		// }
+
+		// End drawing
+		vita2d_end_drawing();
+		vita2d_swap_buffers();
+
+	// Update FPS frames
+	// frames++;
+
+		// Sync
+		if ((!adrenaline->pops_mode && !draw_native) || adrenaline->draw_psp_screen_in_pops) {
+			sceCompatLCDCSync();
+		} else {
+			sceDisplayWaitVblankStart();
+		}
+
+		// Ctrl
+		if (menu_open) {
+			ctrlMenu();
+		}
+	}
+
+	return sceKernelExitDeleteThread(0);
+}
+
+int ScePspemuCustomSettingsHandler(int a1, int a2, int a3, int a4) {
+	if (a2 == 3) {
+		EnterAdrenalineMenu();
+	} else if (a2 == 1) {
+		sceKernelWaitSema(settings_semaid, 1, NULL);
+
+		if (!open_official_settings) {
+			ScePspemuSetDisplayConfig();
+			return 0;
+		}
+	}
+
+	return ScePspemuSettingsHandler(a1, a2, a3, a4);
+}
