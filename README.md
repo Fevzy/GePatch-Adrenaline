@@ -1,6 +1,6 @@
 # GePatch + Adrenaline
 
-Моя доработка GePatch и Adrenaline для PSP-игр в **960×544** на PS Vita.
+GePatch и Adrenaline для запуска PSP-игр в **960×544** на PS Vita.
 
 Это независимая экспериментальная модификация. Авторы исходных проектов:
 [TheOfficialFloW/GePatch](https://github.com/TheOfficialFloW/GePatch) и
